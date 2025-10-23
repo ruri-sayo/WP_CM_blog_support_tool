@@ -1,30 +1,34 @@
 import sys
+import os # 拡張子を変更するためにインポート
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QSizePolicy
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QSizePolicy, QPushButton, QLineEdit, QFileDialog, QStyle
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
-
+from PyQt6.QtCore import Qt, pyqtSignal, QStandardPaths
+from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QIcon
+# Pillow (PIL) をインポート (実際の変換処理に必要)
+# pip install Pillow pillow-avif-plugin
+try:
+    from PIL import Image
+    import pillow_avif # AVIFサポートプラグインを有効化
+except ImportError:
+    print("警告: PIL (Pillow) または pillow-avif-plugin がインストールされていません。")
+    print("インストールしてください: pip install Pillow pillow-avif-plugin")
+    Image = None
 
 class ImageDropArea(QLabel):
     """
     画像をドラッグアンドドロップで受け付けるためのカスタムQLabelクラス
+    (変更なし)
     """
     # ファイルがドロップされたときにファイルパスを通知するシグナル
     fileDropped = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        
-        # 1. ドロップ操作の受け入れを許可する
         self.setAcceptDrops(True)
-        
-        # 初期テキストとスタイルを設定
         self.setText("ここに画像をドラッグ＆ドロップ")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # スクリーンショットの紫色の四角のスタイルを再現
-        # 点線(dashed)、太さ3px、紫(#800080)
         self.setStyleSheet("""
             ImageDropArea {
                 border: 3px dashed #800080;
@@ -34,54 +38,28 @@ class ImageDropArea(QLabel):
                 font-size: 18px;
             }
         """)
-        
-        # ウィジェットが拡大できるようにポリシーを設定
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumSize(200, 200) # 最小サイズ
+        self.setMinimumSize(200, 200)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        """
-        2. ドラッグされたアイテムが領域に入った時のイベント
-        """
-        # (a) ドラッグされたデータにURL (ファイルパス) が含まれているか確認
         if event.mimeData().hasUrls():
-            # (b) 含まれていれば、ドロップ操作を受け入れる (カーソルが変わる)
             event.acceptProposedAction()
         else:
-            # (c) URLでなければ拒否する
             event.ignore()
 
     def dragMoveEvent(self, event: QDragEnterEvent):
-        """
-        (オプション) ドラッグ中に領域内で移動した時のイベント
-        基本的には dragEnterEvent と同じロジックで受け入れ/拒否を判定
-        """
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event: QDropEvent):
-        """
-        3. アイテムがドロップされた時のイベント
-        """
-        # (a) URLデータが含まれているか確認 (念のため)
         if event.mimeData().hasUrls():
-            # (b) 最初のURLを取得
             url = event.mimeData().urls()[0]
-            
-            # (c) URLをローカルファイルのパスに変換
             filepath = url.toLocalFile()
-            
-            # (d) ファイルパスが実際に存在するか、画像ファイルかなどをここでチェック
-            # (ここでは簡易的に拡張子でチェック)
             if filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
                 print(f"画像ファイルがドロップされました: {filepath}")
-                
-                # (e) ファイルパスをメインウィンドウに通知する
                 self.fileDropped.emit(filepath)
-                
-                # (f) ドロップ操作が完了したことを通知
                 event.acceptProposedAction()
             else:
                 print(f"画像ファイルではありません: {filepath}")
@@ -90,20 +68,14 @@ class ImageDropArea(QLabel):
             event.ignore()
 
     def update_preview(self, filepath: str):
-        """
-        ドロップされた画像でプレビューを更新する
-        """
         pixmap = QPixmap(filepath)
-        # ラベルのサイズに合わせて画像をスケーリングして表示
         scaled_pixmap = pixmap.scaled(
             self.size(), 
             Qt.AspectRatioMode.KeepAspectRatio, 
             Qt.TransformationMode.SmoothTransformation
         )
         self.setPixmap(scaled_pixmap)
-        # テキストをクリア
         self.setText("")
-        # スタイルをリセット (枠線は残す)
         self.setStyleSheet("""
             ImageDropArea {
                 border: 3px dashed #800080;
@@ -117,62 +89,188 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("画像変換アプリ")
         
-        # メインとなるウィジェット
+        self.source_filepath = None
+        self.output_filepath = None # ユーザーが *選択した* パス (拡張子変更前)
+
+        # メインとなるウィジェットとレイアウト
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
-        # レイアウト
-        layout = QVBoxLayout(central_widget)
-        
-        # (1) 紫色の領域に相当するドラッグアンドドロップエリア
-        self.drop_area = ImageDropArea()
-        # シグナルとスロットを接続
-        self.drop_area.fileDropped.connect(self.handle_file_drop)
-        
-        # (2) レイアウトに追加
-        layout.addWidget(self.drop_area)
+        main_layout = QVBoxLayout(central_widget) # 全体の垂直レイアウト
 
-        # (3) 他のUI要素 (ここではダミーのラベル)
+        # --- 1. ドラッグアンドドロップエリア ---
+        self.drop_area = ImageDropArea()
+        self.drop_area.fileDropped.connect(self.handle_file_drop)
+        main_layout.addWidget(self.drop_area)
+
+        # --- ドロップされたファイル情報ラベル ---
         self.info_label = QLabel("ドロップされたファイルパス: ")
         self.info_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        layout.addWidget(self.info_label)
+        main_layout.addWidget(self.info_label)
 
-        # ウィンドウの初期サイズ
-        self.setGeometry(300, 300, 600, 450)
+        # --- 2. 変換ボタンエリア (レイアウト変更) ---
+        button_area_layout = QHBoxLayout() # 水平レイアウト
+        
+        # (A) WebP変換エリア (垂直レイアウト)
+        webp_layout = QVBoxLayout()
+        self.convert_button_webp = QPushButton("webPに変換")
+        self.convert_button_webp.setMinimumHeight(60) # 縦の大きさを倍 (約60px) に設定
+        self.convert_button_webp.clicked.connect(self.run_conversion_webp)
+        
+        self.webp_settings_button = QPushButton("webP変換設定")
+        self.webp_settings_button.setFlat(True) # テキストリンク風にする
+        self.webp_settings_button.setStyleSheet("color: #0078d4;") # 色付け
+        self.webp_settings_button.clicked.connect(self.open_webp_settings)
+        
+        webp_layout.addWidget(self.convert_button_webp)
+        webp_layout.addWidget(self.webp_settings_button, 0, Qt.AlignmentFlag.AlignCenter) # 中央揃え
+
+        # (B) AVIF変換エリア (垂直レイアウト)
+        avif_layout = QVBoxLayout()
+        self.convert_button_avif = QPushButton("AVIFに変換")
+        self.convert_button_avif.setMinimumHeight(60) # 縦の大きさを倍 (約60px) に設定
+        self.convert_button_avif.clicked.connect(self.run_conversion_avif)
+        
+        self.avif_settings_button = QPushButton("AVIF変換設定")
+        self.avif_settings_button.setFlat(True) # テキストリンク風にする
+        self.avif_settings_button.setStyleSheet("color: #0078d4;") # 色付け
+        self.avif_settings_button.clicked.connect(self.open_avif_settings)
+        
+        avif_layout.addWidget(self.convert_button_avif)
+        avif_layout.addWidget(self.avif_settings_button, 0, Qt.AlignmentFlag.AlignCenter) # 中央揃え
+
+        # (C) 2つのエリアをボタンエリアレイアウトに追加
+        button_area_layout.addLayout(webp_layout)
+        button_area_layout.addLayout(avif_layout)
+        
+        main_layout.addLayout(button_area_layout) # ボタンエリアレイアウトをメインに追加
+
+        # --- スペーサー (これより下のウィジェットを一番下に押しやる) ---
+        main_layout.addStretch(1)
+
+        # --- 3. 吐き出し先ファイルパス設定 ---
+        output_layout = QHBoxLayout()
+        
+        self.output_path_edit = QLineEdit()
+        self.output_path_edit.setPlaceholderText("吐き出し先のファイルパス（拡張子は自動で変更されます）")
+        self.output_path_edit.setReadOnly(True)
+        
+        self.select_output_button = QPushButton()
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        self.select_output_button.setIcon(icon)
+        self.select_output_button.setToolTip("吐き出し先のファイルパスを選択")
+        self.select_output_button.clicked.connect(self.select_output_path)
+        
+        output_layout.addWidget(self.output_path_edit)
+        output_layout.addWidget(self.select_output_button)
+        
+        main_layout.addLayout(output_layout)
+
+        self.setGeometry(300, 300, 600, 550) # 高さを少し増やす
 
     def handle_file_drop(self, filepath: str):
-        """
-        ファイルがドロップされた時の処理
-        """
-        # (a) ドロップエリアの表示を更新
+        self.source_filepath = filepath
         self.drop_area.update_preview(filepath)
-        
-        # (b) 情報ラベルを更新
         self.info_label.setText(f"処理対象ファイル: {filepath}")
+
+    def select_output_path(self):
+        """
+        吐き出し先の *ベース* となるパスを選択
+        """
+        default_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
         
-        # (c) ここで画像の変換処理を呼び出す
-        # self.convert_image(filepath)
+        # フィルタに WebP と AVIF を追加
+        filter = "WebP画像 (*.webp);;AVIF画像 (*.avif);;PNG画像 (*.png);;JPEG画像 (*.jpg *.jpeg);;すべてのファイル (*)"
+        
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "吐き出し先のファイルを選択",
+            default_dir,
+            filter
+        )
+        
+        if filepath:
+            self.output_filepath = filepath
+            # 拡張子は変換時に変更される旨を伝える
+            base_path, _ = os.path.splitext(filepath)
+            self.output_path_edit.setText(f"{base_path}.[webp/avif]")
+            print(f"吐き出し先ベースパスに設定: {filepath}")
 
-    def convert_image(self, filepath: str):
-        print(f"--- {filepath} の変換処理を開始 ---")
-        # 例: Pillow (PIL) を使った処理
-        # from PIL import Image
-        # try:
-        #     img = Image.open(filepath)
-        #     # 何らかの変換処理 (例: グレースケール)
-        #     gray_img = img.convert('L')
-        #     save_path = filepath + "_converted.png"
-        #     gray_img.save(save_path)
-        #     print(f"変換完了: {save_path}")
-        #     self.info_label.setText(f"変換完了: {save_path}")
-        # except Exception as e:
-        #     print(f"変換エラー: {e}")
-        #     self.info_label.setText(f"変換エラー: {e}")
-        pass
+    def _check_prerequisites(self) -> bool:
+        """ 変換実行前の共通チェック """
+        if not self.source_filepath:
+            self.info_label.setText("エラー: 変換するファイルを先にドロップしてください。")
+            return False
+        if not self.output_filepath:
+            self.info_label.setText("エラー: 吐き出し先ファイルパスを設定してください。")
+            return False
+        if Image is None:
+            self.info_label.setText("エラー: Pillow (PIL) が見つかりません。")
+            return False
+        return True
 
+    def run_conversion_webp(self):
+        """ 「webPに変換」ボタンが押された時の処理 """
+        if not self._check_prerequisites():
+            return
+            
+        # 出力パスの拡張子を .webp に変更
+        base_path, _ = os.path.splitext(self.output_filepath)
+        final_output_path = base_path + ".webp"
+
+        print(f"--- WebP変換 を実行 ---")
+        print(f"  入力: {self.source_filepath}")
+        print(f"  出力: {final_output_path}")
+        
+        try:
+            # Pillow を使った WebP 変換処理
+            img = Image.open(self.source_filepath)
+            # WebP の変換設定 (例: 可逆圧縮 quality=100, 非可逆圧縮 quality=80)
+            # setting = self.get_webp_settings() # 設定画面から値を取得 (将来)
+            img.save(final_output_path, format="WEBP", quality=90, method=6)
+            
+            self.info_label.setText(f"WebP変換 完了: {final_output_path}")
+        except Exception as e:
+            print(f"WebP変換 エラー: {e}")
+            self.info_label.setText(f"WebP変換 エラー: {e}")
+
+    def run_conversion_avif(self):
+        """ 「AVIFに変換」ボタンが押された時の処理 """
+        if not self._check_prerequisites():
+            return
+
+        # 出力パスの拡張子を .avif に変更
+        base_path, _ = os.path.splitext(self.output_filepath)
+        final_output_path = base_path + ".avif"
+
+        print(f"--- AVIF変換 を実行 ---")
+        print(f"  入力: {self.source_filepath}")
+        print(f"  出力: {final_output_path}")
+        
+        try:
+            # Pillow と pillow-avif-plugin を使った AVIF 変換処理
+            img = Image.open(self.source_filepath)
+            # AVIF の変換設定 (例: 可逆圧縮 quality=100, 非可逆圧縮 quality=60, speed=4)
+            # setting = self.get_avif_settings() # 設定画面から値を取得 (将来)
+            img.save(final_output_path, format="AVIF", quality=70, speed=5)
+            
+            self.info_label.setText(f"AVIF変換 完了: {final_output_path}")
+        except Exception as e:
+            print(f"AVIF変換 エラー: {e}")
+            self.info_label.setText(f"AVIF変換 エラー: {e}")
+
+    def open_webp_settings(self):
+        """ (ダミー) WebP変換設定画面を開く """
+        print("WebP変換設定ダイアログを開きます (未実装)")
+        # ここで QDialog を継承した設定ウィンドウなどを開く
+        self.info_label.setText("WebP変換設定 (未実装)")
+
+    def open_avif_settings(self):
+        """ (ダミー) AVIF変換設定画面を開く """
+        print("AVIF変換設定ダイアログを開きます (未実装)")
+        # ここで QDialog を継承した設定ウィンドウなどを開く
+        self.info_label.setText("AVIF変換設定 (未実装)")
 
 if __name__ == "__main__":
-    # PyQt6 アプリケーションの実行
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
