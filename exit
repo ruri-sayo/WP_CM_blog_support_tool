@@ -1,0 +1,23 @@
+[33mcommit 992b637c1796389f850de08fd03922acc8b25cc3[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m
+Author: ruri-sayo <sayohinadakedo@gmail.com>
+Date:   Thu Oct 23 15:51:59 2025 +0900
+
+    最終調整前稼働してる
+
+[33mcommit 87d955ebb8f1aae25bb68a1d69b94a61c277856f[m
+Author: ruri-sayo <sayohinadakedo@gmail.com>
+Date:   Thu Oct 23 15:44:37 2025 +0900
+
+    実装
+
+[33mcommit 5d3daf71cde2ab87e80c3eb398010674066dc7ce[m
+Author: ruri-sayo <sayohinadakedo@gmail.com>
+Date:   Thu Oct 23 15:29:48 2025 +0900
+
+    ベースを作った
+
+[33mcommit ff4f7745240f572696bb26c9c7dc74915a99e68b[m[33m ([m[1;31morigin/main[m[33m)[m
+Author: ruri-sayo <sayohinadakedo@gmail.com>
+Date:   Thu Oct 23 14:57:14 2025 +0900
+
+    リポジトリの作成と同期
