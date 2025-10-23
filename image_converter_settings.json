@@ -1,0 +1,17 @@
+{
+    "webp_settings": {
+        "lossless": true,
+        "quality": 90,
+        "resize_mode": "original",
+        "width": 1280,
+        "height": 720
+    },
+    "avif_settings": {
+        "lossless": false,
+        "quality": 70,
+        "resize_mode": "original",
+        "width": 1280,
+        "height": 720
+    },
+    "output_folder_path": null
+}

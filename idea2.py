@@ -1,12 +1,13 @@
 import sys
 import os 
+import json # ★ 設定の保存/読み込みのためにインポート
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QSizePolicy, QPushButton, QLineEdit, QFileDialog, QStyle,
     QDialog, QGroupBox, QRadioButton, QSpinBox, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QStandardPaths
-from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QIcon, QCloseEvent
 
 # Pillow (PIL) をインポート (実際の変換処理に必要)
 # pip install Pillow pillow-avif-plugin
@@ -19,9 +20,29 @@ except ImportError:
     Image = None
 
 
+# ★ 新規ヘルパー関数: PyInstaller対応
+def get_base_path():
+    """ 
+    PyInstaller で .exe 化された場合 (frozen) と、
+    スクリプト実行の場合で、基準となるパス（.exe または .py ファイル）を取得する 
+    """
+    if getattr(sys, 'frozen', False):
+        # .exe として実行されている場合 (PyInstaller)
+        # sys.executable は .exe ファイルのフルパス
+        return os.path.dirname(sys.executable)
+    else:
+        # スクリプトとして実行されている場合 (.py)
+        try:
+            # __file__ は現在のスクリプトファイルのパス
+            return os.path.dirname(os.path.abspath(__file__))
+        except NameError:
+            # 対話モードなどで __file__ が定義されていない場合
+            return os.path.abspath(".")
+
+
 class ImageDropArea(QLabel):
     """
-    画像をドラッグアンドドロップで受け付けるためのカスタムQLabelクラス
+    画像をドラッグアンドロップで受け付けるためのカスタムQLabelクラス
     (変更なし)
     """
     fileDropped = pyqtSignal(str)
@@ -194,6 +215,10 @@ class MainWindow(QMainWindow):
         
         self.source_filepath = None
         self.output_folder_path = None 
+        
+        # ★ 変更点: 設定ファイルパスを定義
+        self.settings_filepath = os.path.join(get_base_path(), "image_converter_settings.json")
+        print(f"設定ファイルパス: {self.settings_filepath}")
 
         # --- デフォルト変換設定 ---
         default_settings = {
@@ -206,6 +231,9 @@ class MainWindow(QMainWindow):
         self.webp_settings = default_settings.copy()
         self.avif_settings = default_settings.copy()
         self.avif_settings["quality"] = 70 
+        
+        # ★ 変更点: 起動時に設定を読み込む
+        self.load_settings()
 
         # --- メインウィンドウUI ---
         central_widget = QWidget()
@@ -287,6 +315,10 @@ class MainWindow(QMainWindow):
         self.output_path_edit.setPlaceholderText("吐き出し先のフォルダ")
         self.output_path_edit.setReadOnly(True)
         
+        # ★ 変更点: load_settings の後で、読み込んだパスをUIに反映
+        if self.output_folder_path:
+            self.output_path_edit.setText(self.output_folder_path)
+            
         self.select_output_button = QPushButton()
         icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
         self.select_output_button.setIcon(icon)
@@ -298,10 +330,7 @@ class MainWindow(QMainWindow):
         
         main_layout.addLayout(output_layout)
 
-        # ★ 変更点: ここにあった main_layout.addStretch(1) を削除しました。
-        # これにより、余分な垂直スペースが埋められ、コンテンツが下詰めに配置されます。
-
-        self.setGeometry(300, 300, 600, 500) # ウィンドウの初期高さを調整
+        self.setGeometry(300, 300, 600, 500) 
 
     def handle_file_drop(self, filepath: str):
         self.source_filepath = filepath
@@ -312,6 +341,8 @@ class MainWindow(QMainWindow):
             folder = os.path.dirname(filepath)
             self.output_folder_path = folder
             self.output_path_edit.setText(folder)
+            # ★ 変更点: 自動設定した場合も保存
+            self.save_settings() 
 
     def select_output_folder(self):
         default_dir = self.output_folder_path or \
@@ -327,6 +358,8 @@ class MainWindow(QMainWindow):
             self.output_folder_path = folderpath
             self.output_path_edit.setText(folderpath)
             print(f"吐き出し先フォルダに設定: {folderpath}")
+            # ★ 変更点: フォルダ設定変更時にも保存
+            self.save_settings()
 
     def _check_prerequisites(self) -> bool:
         if not self.source_filepath:
@@ -425,6 +458,8 @@ class MainWindow(QMainWindow):
             self.webp_settings = dialog.get_settings()
             print("WebP設定が更新されました:", self.webp_settings)
             self.info_label.setText("WebP設定を更新しました")
+            # ★ 変更点: 設定ダイアログ保存時にも保存
+            self.save_settings()
 
     def open_avif_settings(self):
         dialog = ConversionSettingsDialog(self.avif_settings, self)
@@ -433,6 +468,59 @@ class MainWindow(QMainWindow):
             self.avif_settings = dialog.get_settings()
             print("AVIF設定が更新されました:", self.avif_settings)
             self.info_label.setText("AVIF設定を更新しました")
+            # ★ 変更点: 設定ダイアログ保存時にも保存
+            self.save_settings()
+
+    # ★ 新規メソッド: 設定の読み込み
+    def load_settings(self):
+        """ 起動時に設定ファイル (JSON) を読み込む """
+        if not os.path.exists(self.settings_filepath):
+             print("設定ファイルが見つかりません。デフォルト設定で起動します。")
+             return
+             
+        try:
+            with open(self.settings_filepath, 'r', encoding='utf-8') as f:
+                settings_data = json.load(f)
+            
+            # .get() を使い、キーが存在しない場合は現在の値 (デフォルト) を維持
+            # 辞書全体がキーになっているか確認し、なければデフォルトを割り当て
+            self.webp_settings.update(settings_data.get("webp_settings", {}))
+            self.avif_settings.update(settings_data.get("avif_settings", {}))
+            
+            # パスはNoneかもしれないので、Noneをデフォルトに
+            self.output_folder_path = settings_data.get("output_folder_path", None)
+            
+            print("設定を読み込みました。")
+            
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"設定ファイルが破損している可能性があります: {e}")
+            print("デフォルト設定で起動します。")
+        except Exception as e:
+            print(f"設定の読み込み中に予期せぬエラーが発生しました: {e}")
+
+    # ★ 新規メソッド: 設定の保存
+    def save_settings(self):
+        """ 設定ファイル (JSON) に保存する """
+        settings_data = {
+            "webp_settings": self.webp_settings,
+            "avif_settings": self.avif_settings,
+            "output_folder_path": self.output_folder_path
+        }
+        
+        try:
+            with open(self.settings_filepath, 'w', encoding='utf-8') as f:
+                json.dump(settings_data, f, indent=4, ensure_ascii=False)
+            print(f"設定を保存しました: {self.settings_filepath}")
+        except IOError as e:
+            print(f"設定ファイルの保存に失敗しました: {e}")
+        except Exception as e:
+            print(f"設定の保存中に予期せぬエラーが発生しました: {e}")
+
+    # ★ 新規メソッド: ウィンドウが閉じられるときのイベント
+    def closeEvent(self, event: QCloseEvent):
+        """ ウィンドウが閉じられるときに設定を保存する (フェイルセーフ) """
+        self.save_settings() 
+        event.accept() # ウィンドウを閉じる処理を続行
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
