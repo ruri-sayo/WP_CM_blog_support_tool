@@ -20,6 +20,9 @@ except ImportError:
     Image = None
 
 
+SUPPORTED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
+
+
 # ★ 新規ヘルパー関数: PyInstaller対応
 def get_base_path():
     """ 
@@ -46,6 +49,7 @@ class ImageDropArea(QLabel):
     (変更なし)
     """
     fileDropped = pyqtSignal(str)
+    selectButtonClicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,6 +68,26 @@ class ImageDropArea(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(200, 200)
 
+        self.select_button = QPushButton("ファイルを選択", self)
+        self.select_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.select_button.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #4a4a4a;
+                border: 2px solid #800080;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #f6f0ff;
+            }
+        """)
+        self.select_button.setFixedSize(180, 44)
+        self.select_button.clicked.connect(self.selectButtonClicked.emit)
+        self._update_select_button_position()
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -80,7 +104,7 @@ class ImageDropArea(QLabel):
         if event.mimeData().hasUrls():
             url = event.mimeData().urls()[0]
             filepath = url.toLocalFile()
-            if filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+            if filepath.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
                 self.fileDropped.emit(filepath)
                 event.acceptProposedAction()
             else:
@@ -102,6 +126,33 @@ class ImageDropArea(QLabel):
                 background-color: #ffffff;
             }
         """)
+        self.select_button.raise_()
+
+    def reset(self):
+        self.setPixmap(QPixmap())
+        self.setText("ここに画像をドラッグ＆ドロップ")
+        self.setStyleSheet("""
+            ImageDropArea {
+                border: 3px dashed #800080;
+                border-radius: 10px;
+                background-color: #f0f0f0;
+                color: #aaa;
+                font-size: 18px;
+            }
+        """)
+        self.select_button.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_select_button_position()
+
+    def _update_select_button_position(self):
+        if not hasattr(self, "select_button"):
+            return
+        button_size = self.select_button.size()
+        center_x = (self.width() - button_size.width()) // 2
+        center_y = (self.height() - button_size.height()) // 2
+        self.select_button.move(max(center_x, 0), max(center_y, 0))
 
 
 class ConversionSettingsDialog(QDialog):
@@ -212,10 +263,17 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("画像変換アプリ")
-        
+
         self.source_filepath = None
-        self.output_folder_path = None 
-        
+        self.batch_folder_path = None
+        self.output_folder_path = None
+        self.default_info_text = "処理対象: 未選択"
+
+        self.single_webp_text = "webPに変換"
+        self.batch_webp_text = "webPバッチ辺変換する"
+        self.single_avif_text = "AVIFに変換"
+        self.batch_avif_text = "AVIFにバッチ変換する"
+
         # ★ 変更点: 設定ファイルパスを定義
         self.settings_filepath = os.path.join(get_base_path(), "image_converter_settings.json")
         print(f"設定ファイルパス: {self.settings_filepath}")
@@ -243,19 +301,61 @@ class MainWindow(QMainWindow):
         # 1. ドロップエリア
         self.drop_area = ImageDropArea()
         self.drop_area.fileDropped.connect(self.handle_file_drop)
+        self.drop_area.selectButtonClicked.connect(self.open_file_dialog)
         main_layout.addWidget(self.drop_area)
 
-        # 2. 情報ラベル
-        self.info_label = QLabel("ドロップされたファイルパス: ")
+        # 2. バッチ処理操作
+        batch_layout = QHBoxLayout()
+
+        self.batch_select_button = QPushButton("バッチ処理フォルダを選択")
+        self.batch_select_button.setMinimumHeight(60)
+        self.batch_select_button.setStyleSheet("""
+            QPushButton {
+                background-color: #8a2be2;
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #9d4bff;
+            }
+        """)
+        self.batch_select_button.clicked.connect(self.select_batch_folder)
+
+        self.batch_clear_button = QPushButton("選択取りけし")
+        self.batch_clear_button.setMinimumHeight(60)
+        self.batch_clear_button.setStyleSheet("""
+            QPushButton {
+                background-color: #cccccc;
+                color: #333333;
+                font-size: 13px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #dddddd;
+            }
+        """)
+        self.batch_clear_button.clicked.connect(self.clear_batch_selection)
+        self.batch_clear_button.setEnabled(False)
+
+        batch_layout.addWidget(self.batch_select_button)
+        batch_layout.addWidget(self.batch_clear_button)
+
+        main_layout.addLayout(batch_layout)
+
+        # 3. 情報ラベル
+        self.info_label = QLabel(self.default_info_text)
         self.info_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         main_layout.addWidget(self.info_label)
 
-        # 3. 変換ボタンエリア
+        # 4. 変換ボタンエリア
         button_area_layout = QHBoxLayout()
-        
+
         # WebP
         webp_layout = QVBoxLayout()
-        self.convert_button_webp = QPushButton("webPに変換")
+        self.convert_button_webp = QPushButton(self.single_webp_text)
         self.convert_button_webp.setMinimumHeight(60)
         self.convert_button_webp.setStyleSheet("""
             QPushButton {
@@ -276,11 +376,11 @@ class MainWindow(QMainWindow):
         self.webp_settings_button.clicked.connect(self.open_webp_settings)
         
         webp_layout.addWidget(self.convert_button_webp)
-        webp_layout.addWidget(self.webp_settings_button) 
+        webp_layout.addWidget(self.webp_settings_button)
 
         # AVIF
         avif_layout = QVBoxLayout()
-        self.convert_button_avif = QPushButton("AVIFに変換")
+        self.convert_button_avif = QPushButton(self.single_avif_text)
         self.convert_button_avif.setMinimumHeight(60)
         self.convert_button_avif.setStyleSheet("""
             QPushButton {
@@ -305,10 +405,10 @@ class MainWindow(QMainWindow):
 
         button_area_layout.addLayout(webp_layout)
         button_area_layout.addLayout(avif_layout)
-        
+
         main_layout.addLayout(button_area_layout)
 
-        # 4. 吐き出し先フォルダ設定
+        # 5. 吐き出し先フォルダ設定
         output_layout = QHBoxLayout()
         
         self.output_path_edit = QLineEdit()
@@ -330,19 +430,134 @@ class MainWindow(QMainWindow):
         
         main_layout.addLayout(output_layout)
 
-        self.setGeometry(300, 300, 600, 500) 
+        self.setGeometry(300, 300, 600, 500)
+
+        self.update_conversion_mode_text()
+        self.update_info_label()
 
     def handle_file_drop(self, filepath: str):
+        self.set_source_file(filepath)
+
+    def open_file_dialog(self):
+        if self.source_filepath:
+            default_dir = os.path.dirname(self.source_filepath)
+        else:
+            default_dir = self.batch_folder_path or self.output_folder_path or \
+                          QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+
+        filters = "画像ファイル (*.png *.jpg *.jpeg *.bmp *.gif);;すべてのファイル (*.*)"
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "変換する画像ファイルを選択",
+            default_dir,
+            filters
+        )
+
+        if filepath:
+            self.set_source_file(filepath)
+
+    def set_source_file(self, filepath: str):
         self.source_filepath = filepath
         self.drop_area.update_preview(filepath)
-        self.info_label.setText(f"処理対象ファイル: {filepath}")
-        
+
         if not self.output_folder_path:
             folder = os.path.dirname(filepath)
             self.output_folder_path = folder
             self.output_path_edit.setText(folder)
             # ★ 変更点: 自動設定した場合も保存
-            self.save_settings() 
+            self.save_settings()
+
+        self.update_info_label()
+
+    def select_batch_folder(self):
+        default_dir = self.batch_folder_path or self.output_folder_path or \
+                      QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+
+        folderpath = QFileDialog.getExistingDirectory(
+            self,
+            "バッチ処理するフォルダを選択",
+            default_dir
+        )
+
+        if not folderpath:
+            return
+
+        self.batch_folder_path = folderpath
+        self.batch_clear_button.setEnabled(True)
+        if not self.output_folder_path:
+            self.output_folder_path = folderpath
+            self.output_path_edit.setText(folderpath)
+        self.update_conversion_mode_text()
+        self.update_info_label()
+        self.save_settings()
+
+    def clear_batch_selection(self):
+        self.batch_folder_path = None
+        self.batch_clear_button.setEnabled(False)
+        self.update_conversion_mode_text()
+        self.update_info_label()
+        self.save_settings()
+
+    def update_conversion_mode_text(self):
+        if hasattr(self, "convert_button_webp"):
+            if self.batch_folder_path:
+                self.convert_button_webp.setText(self.batch_webp_text)
+            else:
+                self.convert_button_webp.setText(self.single_webp_text)
+
+        if hasattr(self, "convert_button_avif"):
+            if self.batch_folder_path:
+                self.convert_button_avif.setText(self.batch_avif_text)
+            else:
+                self.convert_button_avif.setText(self.single_avif_text)
+
+        if hasattr(self, "batch_clear_button"):
+            self.batch_clear_button.setEnabled(bool(self.batch_folder_path))
+
+    def update_info_label(self):
+        if hasattr(self, "info_label"):
+            if self.batch_folder_path and self.source_filepath:
+                self.info_label.setText(
+                    f"バッチ処理フォルダ: {self.batch_folder_path}\nプレビュー: {self.source_filepath}"
+                )
+            elif self.batch_folder_path:
+                self.info_label.setText(f"バッチ処理フォルダ: {self.batch_folder_path}")
+            elif self.source_filepath:
+                self.info_label.setText(f"処理対象ファイル: {self.source_filepath}")
+            else:
+                self.info_label.setText(self.default_info_text)
+
+    def _collect_batch_files(self):
+        if not self.batch_folder_path:
+            return []
+
+        files = []
+        for entry in sorted(os.listdir(self.batch_folder_path)):
+            filepath = os.path.join(self.batch_folder_path, entry)
+            if os.path.isfile(filepath) and entry.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS):
+                files.append(filepath)
+        return files
+
+    def _build_webp_save_options(self, settings: dict) -> dict:
+        options = {
+            "format": "WEBP",
+            "lossless": settings["lossless"],
+            "method": 6
+        }
+        if not settings["lossless"]:
+            options["quality"] = settings["quality"]
+        return options
+
+    def _build_avif_save_options(self, settings: dict) -> dict:
+        options = {
+            "format": "AVIF",
+            "speed": 5
+        }
+        if settings["lossless"]:
+            options["quality"] = 100
+        else:
+            options["quality"] = settings["quality"]
+        return options
 
     def select_output_folder(self):
         default_dir = self.output_folder_path or \
@@ -361,10 +576,15 @@ class MainWindow(QMainWindow):
             # ★ 変更点: フォルダ設定変更時にも保存
             self.save_settings()
 
-    def _check_prerequisites(self) -> bool:
-        if not self.source_filepath:
-            self.info_label.setText("エラー: 変換するファイルを先にドロップしてください。")
-            return False
+    def _check_prerequisites(self, for_batch: bool = False) -> bool:
+        if for_batch:
+            if not self.batch_folder_path:
+                self.info_label.setText("エラー: バッチ処理用のフォルダを選択してください。")
+                return False
+        else:
+            if not self.source_filepath:
+                self.info_label.setText("エラー: 変換するファイルを先に選択してください。")
+                return False
         if not self.output_folder_path:
             self.info_label.setText("エラー: 吐き出し先フォルダを設定してください。")
             return False
@@ -373,82 +593,152 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _get_final_output_path(self, new_extension: str) -> str:
-        base_filename = os.path.basename(self.source_filepath)
+    def _get_output_path(self, source_path: str, new_extension: str) -> str:
+        base_filename = os.path.basename(source_path)
         filename_without_ext, _ = os.path.splitext(base_filename)
         new_filename = filename_without_ext + new_extension
         return os.path.join(self.output_folder_path, new_filename)
 
     def _process_image(self, img: Image.Image, settings: dict) -> Image.Image:
+        processed_img = img.copy()
         if settings["resize_mode"] == "specify":
             try:
                 new_size = (settings["width"], settings["height"])
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                processed_img = processed_img.resize(new_size, Image.Resampling.LANCZOS)
             except Exception as e:
                 print(f"リサイズエラー: {e}")
-        return img
+        return processed_img
+
+    def _run_batch_conversion(self, new_extension: str, settings: dict, format_label: str, save_options_builder):
+        try:
+            files = self._collect_batch_files()
+        except OSError as e:
+            print(f"バッチ処理フォルダへのアクセスでエラー: {e}")
+            self.info_label.setText("エラー: フォルダにアクセスできません。")
+            return
+
+        if not files:
+            self.info_label.setText("エラー: バッチ処理フォルダに対応する画像が見つかりません。")
+            return
+
+        total = len(files)
+        successes = 0
+        failures = 0
+
+        for index, source_path in enumerate(files, start=1):
+            self.info_label.setText(f"{format_label}のバッチ変換中... ({index}/{total})")
+            QApplication.processEvents()
+
+            processed_img = None
+            try:
+                with Image.open(source_path) as img:
+                    processed_img = self._process_image(img, settings)
+
+                output_path = self._get_output_path(source_path, new_extension)
+                save_options = save_options_builder(settings)
+                processed_img.save(output_path, **save_options)
+                successes += 1
+            except Exception as e:
+                failures += 1
+                print(f"{format_label}バッチ変換 エラー ({source_path}): {e}")
+            finally:
+                if processed_img is not None:
+                    try:
+                        processed_img.close()
+                    except Exception:
+                        pass
+
+        if failures:
+            self.info_label.setText(
+                f"{format_label}バッチ変換 完了: {successes}件成功 / {failures}件失敗"
+            )
+        else:
+            self.info_label.setText(f"{format_label}バッチ変換 完了: {successes}件")
+
+        QApplication.processEvents()
 
     def run_conversion_webp(self):
+        if self.batch_folder_path:
+            if not self._check_prerequisites(for_batch=True):
+                return
+            self._run_batch_conversion(
+                ".webp",
+                self.webp_settings,
+                "WebP",
+                self._build_webp_save_options
+            )
+            return
+
         if not self._check_prerequisites():
             return
-            
-        final_output_path = self._get_final_output_path(".webp")
+
+        final_output_path = self._get_output_path(self.source_filepath, ".webp")
         settings = self.webp_settings
 
         print(f"--- WebP変換 を実行 (設定: {settings}) ---")
-        self.info_label.setText("WebPに変換中...") 
-        
+        self.info_label.setText("WebPに変換中...")
+
+        processed_img = None
         try:
-            img = Image.open(self.source_filepath)
-            img = self._process_image(img, settings)
+            with Image.open(self.source_filepath) as img:
+                processed_img = self._process_image(img, settings)
 
-            save_options = {
-                "format": "WEBP",
-                "lossless": settings["lossless"],
-                "method": 6 
-            }
-            if not settings["lossless"]:
-                save_options["quality"] = settings["quality"]
+            save_options = self._build_webp_save_options(settings)
+            processed_img.save(final_output_path, **save_options)
 
-            img.save(final_output_path, **save_options)
-            
             self.info_label.setText(f"WebP変換 完了: {final_output_path}")
         except Exception as e:
             print(f"WebP変換 エラー: {e}")
             self.info_label.setText(f"WebP変換 エラー: {e}")
-        
+        finally:
+            if processed_img is not None:
+                try:
+                    processed_img.close()
+                except Exception:
+                    pass
+
         QApplication.processEvents()
 
     def run_conversion_avif(self):
+        if self.batch_folder_path:
+            if not self._check_prerequisites(for_batch=True):
+                return
+            self._run_batch_conversion(
+                ".avif",
+                self.avif_settings,
+                "AVIF",
+                self._build_avif_save_options
+            )
+            return
+
         if not self._check_prerequisites():
             return
 
-        final_output_path = self._get_final_output_path(".avif")
+        final_output_path = self._get_output_path(self.source_filepath, ".avif")
         settings = self.avif_settings
 
         print(f"--- AVIF変換 を実行 (設定: {settings}) ---")
-        self.info_label.setText("AVIFに変換中...") 
-        
+        self.info_label.setText("AVIFに変換中...")
+
+        processed_img = None
         try:
-            img = Image.open(self.source_filepath)
-            img = self._process_image(img, settings)
+            with Image.open(self.source_filepath) as img:
+                processed_img = self._process_image(img, settings)
 
-            save_options = {
-                "format": "AVIF",
-                "speed": 5 
-            }
-            if settings["lossless"]:
-                save_options["quality"] = 100
-            else:
-                save_options["quality"] = settings["quality"]
+            save_options = self._build_avif_save_options(settings)
+            processed_img.save(final_output_path, **save_options)
 
-            img.save(final_output_path, **save_options)
-            
             self.info_label.setText(f"AVIF変換 完了: {final_output_path}")
         except Exception as e:
             print(f"AVIF変換 エラー: {e}")
             self.info_label.setText(f"AVIF変換 エラー: {e}")
-            
+        finally:
+            if processed_img is not None:
+                try:
+                    processed_img.close()
+                except Exception:
+                    pass
+
         QApplication.processEvents()
 
     def open_webp_settings(self):
@@ -486,10 +776,15 @@ class MainWindow(QMainWindow):
             # 辞書全体がキーになっているか確認し、なければデフォルトを割り当て
             self.webp_settings.update(settings_data.get("webp_settings", {}))
             self.avif_settings.update(settings_data.get("avif_settings", {}))
-            
+
             # パスはNoneかもしれないので、Noneをデフォルトに
             self.output_folder_path = settings_data.get("output_folder_path", None)
-            
+            batch_path = settings_data.get("batch_folder_path")
+            if batch_path and os.path.isdir(batch_path):
+                self.batch_folder_path = batch_path
+            else:
+                self.batch_folder_path = None
+
             print("設定を読み込みました。")
             
         except (json.JSONDecodeError, TypeError) as e:
@@ -504,7 +799,8 @@ class MainWindow(QMainWindow):
         settings_data = {
             "webp_settings": self.webp_settings,
             "avif_settings": self.avif_settings,
-            "output_folder_path": self.output_folder_path
+            "output_folder_path": self.output_folder_path,
+            "batch_folder_path": self.batch_folder_path
         }
         
         try:
